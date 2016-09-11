@@ -141,7 +141,7 @@ public:
       if (nd_iter == all_user_data.end()) {
         
         // Register the new user data
-        data_idx = all_user_data.size();
+        data_idx = (TIndex) all_user_data.size();
         all_user_data.push_back(nd);
         all_visual_data.resize(all_visual_data.size() + 1); 
         
@@ -150,7 +150,7 @@ public:
       }
       else {
         // If exists in old_entries
-        data_idx = std::distance(all_user_data.begin(), nd_iter);
+        data_idx = (TIndex) std::distance(all_user_data.begin(), nd_iter);
       
         s_updated.data.push_back(data_idx);
         

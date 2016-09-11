@@ -1,6 +1,4 @@
 
-
-
 items
   n items identified by id
   Where each Item:
@@ -38,105 +36,6 @@ transition
 
 
 // ----------------------------------------
-template< typename TUserData, typename TVisualData >
-class CVisualData {
-
-  struct TData {
-    bool            is_valid;
-    uint32_t        key;         // Unique id 
-//    uint32_t   sort_index;
-    TUserData*      user_data;   // Pointer to the data provided by the user
-    TVisualData     visual_data;
-  };
-  std::vector< TData > all_data;
-
-public:
-
-  // -----------------------------------------
-  class CSelection {
-    std::vector< TData* > data;
-
-  public:
-
-    // -----------------------------------
-    template< typename TGenerator >
-    CSelection& append( TGenerator &generator ) {
-
-      for( auto d : data )
-        d->visual_data = generator( d->user_data, d->key );
-
-      return *this;
-    }
-
-    CSelection& remove( ) {
-      for( auto d : data ) {
-        delete d->visual_data;
-        d->visual_data = nullptr;
-      }
-      return *this;
-    }
-
-    // -----------------------------------
-    template< typename TPropSet >
-    CSelection& set( uint32_t prop_id, TPropSet prop_set ) {
-
-      for( auto d : data )
-        prop_set( d->visual_data, prop_id, d->user_data, d->key );
-
-      return *this;
-    }
-
-
-  };
-
-  // https://medium.com/@mbostock/what-makes-software-good-943557f8a488#.dgmv8u19d
-  template< typename data_iterator >
-  CSelection bind( data_iterator in_begin, data_iterator in_end ) {
-
-    // By default all exit    
-    s_exit = std::move( s_updated );
-    s_enter.clear();
-    s_updated.clear();
-
-    // For each input elem..
-    auto in_it = in_begin;
-    while( in_it != in_end ) {
-
-      // If exists in old_entries
-      auto it_exit = s_exit.find( in_it );
-      if( it_exit != s_exit.end() ) {
-        s_updated.push_back( *it_exit );
-        // copy data
-        s_exit.erase( it_exit );
-      } else {
-        // The element is new
-        s_enter.push_back( in_it );
-      }
-
-      ++in_it;
-    }
-
-    // At this point
-    //   exit contains the elems that were there but no longer are
-    //   enter contains the elems that were not there but now are
-    //   update contains the elems that were there and are
-
-    return s_updated;
-  }
-
-  CSelection& exit() { return s_exit; }
-  CSelection& enter() { return s_enter; }
-  CSelection& updated() { return s_udated; }
-
-private:
-
-  CSelection s_updated;
-  CSelection s_enter;
-  CSelection s_exit;
-};
-
-
-// ----------------------------------------
 class CMYScreen {
   CVisualData< std::string > d;
 public:
@@ -148,7 +47,7 @@ void CMyScreen::onLoad() {
   names.push_back( "john" );
   names.push_back( "peter" );
   names.push_back( "eva" );
-  d.data( names.begin(), names.end() ).append( "text" )
+  d.data( names ).append( "text" )
 
 }
 
