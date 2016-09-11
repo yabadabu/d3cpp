@@ -18,6 +18,30 @@ class CDataVisualizer {
 
   typedef std::vector< TIndex >      TVisualizedDataContainer;
 
+  // A prop of type binded to a user data.orop_id
+  template< typename TPropValueType >
+  struct TPropValue {
+    TIndex          user_data_idx;     // index in TUserDataContainer & TVisualDataContainer
+    uint32_t        prop_id;           // color, pos, direction, ... the id of the attribute
+    TPropValueType  prop_value;
+  };
+
+  // Define a function prototype that we must implement later
+  template< typename TPropType >      
+  std::vector< TPropValue< TPropType > >& getProps();
+
+  // This define the container and the specialized member function returning the container
+#define DECL_PROP_TYPE(atype)   std::vector< TPropValue< atype > > vals_ ## atype; \
+  template<>                                                                       \
+  std::vector< TPropValue< atype > >& getProps() { return vals_ ## atype; }
+
+  DECL_PROP_TYPE(float);
+  DECL_PROP_TYPE(int);
+
+  // To be able to use the macro hack with types with spaces... (ugly)
+  typedef const char* const_char_ptr;
+  DECL_PROP_TYPE(const_char_ptr);
+
 public:
 
   // -----------------------------------------
@@ -106,18 +130,33 @@ public:
       return *this;
     }
 
-    /*
-    // -----------------------------------
-    template< typename TPropSet >
-    CSelection& set(uint32_t prop_id, TPropSet prop_set) {
+    // -----------------------------------------------------------------
+    // Register that 
+    //     user_data  d
+    //     will have  prop_id
+    //     of type    TPropType
+    //     has value  v
+    // I need this in case we want to transition...
+    template< typename TFn >
+    const CSelection& set(uint32_t prop_id, TFn prop_value_provider ) const {
 
-    for (auto d : data)
-    prop_set(d->visual_data, prop_id, d->user_data, d->key);
+      typedef typename decltype(prop_value_provider(data[0], 0)) TPropType;
 
-    return *this;
+      auto& props_container = dv->getProps< TPropType >();
+
+      TPropValue< TPropType > p;
+      p.prop_id = prop_id;
+
+      TIndex idx = 0;
+      for (auto d : data) {
+        p.user_data_idx = d;
+        p.prop_value = prop_value_provider(d, idx);
+        props_container.push_back(p);
+
+        ++idx;
+      }
+      return *this;
     }
-    */
-
 
   };
 
@@ -282,7 +321,7 @@ int main()
       v.x0 = idx;
       v.y0 = d.key;
       return v;
-    });
+    }).set(0, [](auto d, auto idx) { return idx * 10.f; });
 
     auto all = d.enter().merge(d.updated());
     all.sort().each(dump);
