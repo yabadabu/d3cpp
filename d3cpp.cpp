@@ -43,14 +43,6 @@ class CDataVisualizer {
 
   // A prop of type binded to a user data.orop_id
   template< typename TPropValueType >
-  struct TPropValue {
-    TIndex          user_data_idx;      // index in TUserDataContainer & TVisualDataContainer
-    uint32_t        prop_id;            // color, pos, direction, ... the id of the attribute
-    TPropValueType  prop_value;
-  };
-
-  // A prop of type binded to a user data.orop_id
-  template< typename TPropValueType >
   struct TTweenValue {
     TIndex          user_data_idx;      // index in TUserDataContainer & TVisualDataContainer
     uint32_t        prop_id;            // color, pos, direction, ... the id of the attribute
@@ -65,14 +57,8 @@ class CDataVisualizer {
   template< typename TPropType >
   std::vector< TTweenValue< TPropType > >& getTweens();
 
-  // Define a function template that we must implement later
-  template< typename TPropType >      
-  std::vector< TPropValue< TPropType > >& getProps();
-
   // This define the container and the specialized member function returning the container
 #define DECL_PROP_TYPE(atype)   \
-  std::vector< TPropValue< atype > > vals_ ## atype; \
-  template<> std::vector< TPropValue< atype > >& getProps() { return vals_ ## atype; } \
   std::vector< TTweenValue< atype > > tweens_ ## atype; \
   template<> std::vector< TTweenValue< atype > >& getTweens() { return tweens_ ## atype; } \
 
@@ -83,9 +69,14 @@ class CDataVisualizer {
   typedef const char* const_char_ptr;
   DECL_PROP_TYPE(const_char_ptr);
 
+  // Forward get/set property access to the visual data object
   template< typename TPropType >
   void setPropValue(TIndex user_data_idx, uint32_t prop_id, TPropType new_value) {
     all_visual_data[user_data_idx].set(prop_id, new_value);
+  }
+  template< typename TPropType >
+  TPropType getPropValue(TIndex user_data_idx, uint32_t prop_id) {
+    return all_visual_data[user_data_idx].get(prop_id);
   }
 
   template< typename TPropType >
@@ -132,7 +123,7 @@ public:
 
   public:
 
-    TIndex size() const { return data.size(); }
+    TIndex size() const { return (TIndex) data.size(); }
     bool empty() const { return data.empty(); }
     bool isValid() const { return dv != nullptr; }
 
@@ -223,20 +214,11 @@ public:
       // Get the type of the value returned by the provided function
       typedef typename decltype(prop_value_provider(data[0], 0)) TPropType;
 
-      auto& props_container = dv->getProps< TPropType >();
-
       // All the registers entries will have the same prop_id
-      TPropValue< TPropType > p;
-      p.prop_id = prop_id;
-
       TIndex idx = 0;
       for (auto d : data) {
-        p.user_data_idx = d;
-        p.prop_value = prop_value_provider(d, idx);
-        props_container.push_back(p);
-
-        dv->setPropValue<TPropType>(d, prop_id, p.prop_value );
-
+        auto new_value = prop_value_provider(d, idx);
+        dv->setPropValue<TPropType>(d, prop_id, new_value );
         ++idx;
       }
       return *this;
@@ -250,6 +232,8 @@ public:
       float             default_delay = 0.f;
       float             default_duration = 0.25f;
       ease::TEaseFn ease_fn = ease::cubic;
+
+      friend class CSelection;
 
       // Applied in the selection order
       struct TTweenBaseParam {
@@ -277,7 +261,7 @@ public:
       CTransition& delay(TFn fn) {
         const TUserDataContainer& udc = selection.dv->all_user_data;
         TIndex idx = 0;
-        for (auto d : data) {
+        for (auto d : selection.data) {
           base_params[ idx ].delay = fn(udc[d], idx);
           ++idx;
         }
@@ -289,7 +273,7 @@ public:
       CTransition& duration(TFn fn) {
         const TUserDataContainer& udc = selection.dv->all_user_data;
         TIndex idx = 0;
-        for (auto d : data) {
+        for (auto d : selection.data) {
           base_params[ idx ].duration = fn(udc[d], idx);
           assert(base_params[idx].duration > 0.f);
           ++idx;
@@ -309,10 +293,10 @@ public:
         // Get the type of the value returned by the provided function
         typedef typename decltype(prop_value_provider(data[0], 0)) TPropType;
 
-        auto& tweens_container = selection.dv->getTweenstProps< TPropType >();
+        auto& tweens_container = selection.dv->getTweens< TPropType >();
 
         // Reserve N new tweens
-        TIndex i0 = tweens_container.size();
+        TIndex i0 = (TIndex)tweens_container.size();
         TIndex i1 = i0 + selection.size();
         tweens_container.resize( i1 );
 
@@ -320,13 +304,13 @@ public:
 
         // Init all tweens in bulk
         TIndex idx = 0;
-        for (auto d : data) {
+        for (auto d : selection.data) {
           tc->user_data_idx = d;
           tc->prop_id = prop_id;
           tc->start_delay = base_params[idx].delay;
           tc->duration = base_params[idx].duration;
           tc->ease_fn = ease_fn;
-          tc->value_t0 = 0;
+          tc->value_t0 = selection.dv->getPropValue<TPropType>(d, prop_id);
           tc->value_t1 = prop_value_provider(d, idx);
           ++tc;
           ++idx;
@@ -338,7 +322,7 @@ public:
     };
 
     CTransition transition() const {
-      return CTransition(this);
+      return CTransition(*this);
     }
 
   };
@@ -453,8 +437,11 @@ struct TVisual {
   void destroy() {
     x0 = y0 = -1;
   }
-  void set(uint32_t prop_id, float t) {
-
+  void set(uint32_t prop_id, float new_k) {
+    k = new_k;
+  }
+  float get(uint32_t prop_id) {
+    return k;
   }
 };
 
@@ -521,7 +508,10 @@ int main()
       v.x0 = idx;
       v.y0 = d.key;
       return v;
-    }).set(0, [](auto d, auto idx) { return idx * 10.f; });
+    }).set(0, [](auto d, auto idx) { return idx * 10.f; })
+      .transition()
+      .delay([](auto d, auto idx) { return 0.5f; })
+      .set(0, [](auto d, auto idx) { return idx * 20.f; });
 
     auto all = d.enter().merge(d.updated());
     all.sort().each(dump);
