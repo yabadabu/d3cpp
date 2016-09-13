@@ -7,6 +7,29 @@
 
 #include <string>
 
+namespace ease {
+
+  typedef float(*TEaseFn)(float);
+
+  float linear(float t) {
+    return t;
+  }
+ 
+  float cubicIn(float t) {
+    return t * t * t;
+  }
+
+  float cubicOut(float t) {
+    return --t * t * t + 1;
+  }
+
+  // same as cubicInOut
+  float cubic(float t) {
+    return ((t *= 2) <= 1 ? t * t * t : (t -= 2) * t * t + 2) / 2;
+  }
+
+}
+
 // ----------------------------------------
 template< typename TUserData, typename TVisualData >
 class CDataVisualizer {
@@ -21,26 +44,81 @@ class CDataVisualizer {
   // A prop of type binded to a user data.orop_id
   template< typename TPropValueType >
   struct TPropValue {
-    TIndex          user_data_idx;     // index in TUserDataContainer & TVisualDataContainer
-    uint32_t        prop_id;           // color, pos, direction, ... the id of the attribute
+    TIndex          user_data_idx;      // index in TUserDataContainer & TVisualDataContainer
+    uint32_t        prop_id;            // color, pos, direction, ... the id of the attribute
     TPropValueType  prop_value;
   };
 
-  // Define a function prototype that we must implement later
+  // A prop of type binded to a user data.orop_id
+  template< typename TPropValueType >
+  struct TTweenValue {
+    TIndex          user_data_idx;      // index in TUserDataContainer & TVisualDataContainer
+    uint32_t        prop_id;            // color, pos, direction, ... the id of the attribute
+    float           start_delay;        // When must start
+    float           duration;           // How long will be
+    ease::TEaseFn   ease_fn;            // Type of blending
+    TPropValueType  value_t0;           // initial value
+    TPropValueType  value_t1;           // final value
+  };
+
+  // Define a function template that we must implement later
+  template< typename TPropType >
+  std::vector< TTweenValue< TPropType > >& getTweens();
+
+  // Define a function template that we must implement later
   template< typename TPropType >      
   std::vector< TPropValue< TPropType > >& getProps();
 
   // This define the container and the specialized member function returning the container
-#define DECL_PROP_TYPE(atype)   std::vector< TPropValue< atype > > vals_ ## atype; \
-  template<>                                                                       \
-  std::vector< TPropValue< atype > >& getProps() { return vals_ ## atype; }
+#define DECL_PROP_TYPE(atype)   \
+  std::vector< TPropValue< atype > > vals_ ## atype; \
+  template<> std::vector< TPropValue< atype > >& getProps() { return vals_ ## atype; } \
+  std::vector< TTweenValue< atype > > tweens_ ## atype; \
+  template<> std::vector< TTweenValue< atype > >& getTweens() { return tweens_ ## atype; } \
 
-  DECL_PROP_TYPE(float);
+  DECL_PROP_TYPE(float);    // This declared the member: vals_float
   DECL_PROP_TYPE(int);
 
   // To be able to use the macro hack with types with spaces... (ugly)
   typedef const char* const_char_ptr;
   DECL_PROP_TYPE(const_char_ptr);
+
+  template< typename TPropType >
+  void setPropValue(TIndex user_data_idx, uint32_t prop_id, TPropType new_value) {
+    all_visual_data[user_data_idx].set(prop_id, new_value);
+  }
+
+  template< typename TPropType >
+  bool updateTweens(float dt) {
+    int nactives = 0;
+    auto& tweens = getTweens< TPropType >();
+    for (auto& tw : tweens) {
+      float unit_time = (current_time - tw.start_delay) / tw.duration;
+      if (unit_time < 0.f)
+        continue;
+      if (unit_time < 1.f) {
+        unit_time = tw.ease_fn(unit_time);
+      }
+      else {
+        unit_time = 1.f;
+        // disable this
+        tw.start_delay = -1.f;
+        // notify end of the transition
+      }
+
+      auto new_value = tw.value_t0 * (1.f - unit_time) + tw.value_t1 * (unit_time);
+
+      setPropValue(tw.user_data_idx, tw.prop_id, new_value);
+      
+      ++nactives;
+    }
+
+    // Delete everything
+    if (!nactives)
+      tweens.clear();
+    
+    return nactives > 0;
+  }
 
 public:
 
@@ -48,6 +126,7 @@ public:
   class CSelection {
     
     friend class CDataVisualizer;
+    friend class CTransition;
     CDataVisualizer*           dv;
     TVisualizedDataContainer   data;
 
@@ -55,10 +134,11 @@ public:
 
     TIndex size() const { return data.size(); }
     bool empty() const { return data.empty(); }
+    bool isValid() const { return dv != nullptr; }
 
     template< typename TFn >
     void each( TFn fn ) const {
-      assert(this->dv || data.empty() );
+      assert( isValid() );
       for (auto d : data) {
         fn(dv->all_user_data[d], dv->all_visual_data[d]);
       }
@@ -69,7 +149,7 @@ public:
     // passes the filter 
     template< typename TFn >
     CSelection filter(TFn filter ) const {
-      assert(this->dv || data.empty());
+      assert(isValid());
       CSelection new_sel;
       TIndex idx = 0;
       for (auto d : data) {
@@ -83,7 +163,8 @@ public:
 
     // ----------------------------------------------------------------------
     CSelection merge(const CSelection& other) const {
-      assert(this->dv == other.dv);
+      assert(isValid());
+      assert(this->dv == other.dv);   // Both selection should be part of the same CDataVisualizer instance
       CSelection new_sel;
 
       std::merge( data.begin(), data.end()
@@ -131,19 +212,20 @@ public:
     }
 
     // -----------------------------------------------------------------
-    // Register that 
-    //     user_data  d
-    //     will have  prop_id
-    //     of type    TPropType
-    //     has value  v
-    // I need this in case we want to transition...
+    // Register the following:
+    //     user_data   d
+    //     at property prop_id
+    //     has value   v
+    // We need to store this in case we want to transition...
     template< typename TFn >
     const CSelection& set(uint32_t prop_id, TFn prop_value_provider ) const {
 
+      // Get the type of the value returned by the provided function
       typedef typename decltype(prop_value_provider(data[0], 0)) TPropType;
 
       auto& props_container = dv->getProps< TPropType >();
 
+      // All the registers entries will have the same prop_id
       TPropValue< TPropType > p;
       p.prop_id = prop_id;
 
@@ -153,13 +235,115 @@ public:
         p.prop_value = prop_value_provider(d, idx);
         props_container.push_back(p);
 
+        dv->setPropValue<TPropType>(d, prop_id, p.prop_value );
+
         ++idx;
       }
       return *this;
     }
 
+    // -----------------------------------------------------------------
+    // -----------------------------------------------------------------
+    // -----------------------------------------------------------------
+    class CTransition {
+      const CSelection& selection;
+      float             default_delay = 0.f;
+      float             default_duration = 0.25f;
+      ease::TEaseFn ease_fn = ease::cubic;
+
+      // Applied in the selection order
+      struct TTweenBaseParam {
+        float     delay;
+        float     duration;
+      };
+      std::vector< TTweenBaseParam > base_params;
+
+      void alloc() {
+        base_params.resize(selection.size());
+        for (auto& e : base_params) {
+          e.delay = default_delay;
+          e.duration = default_duration;
+        }
+      }
+
+      CTransition(const CSelection& new_selection) : selection( new_selection ) {
+        alloc();
+      }
+
+    public:
+      
+      // Save delay for each element in the selection
+      template< typename TFn >
+      CTransition& delay(TFn fn) {
+        const TUserDataContainer& udc = selection.dv->all_user_data;
+        TIndex idx = 0;
+        for (auto d : data) {
+          base_params[ idx ].delay = fn(udc[d], idx);
+          ++idx;
+        }
+        return *this;
+      }
+
+      // Save duration for each element in the selection
+      template< typename TFn >
+      CTransition& duration(TFn fn) {
+        const TUserDataContainer& udc = selection.dv->all_user_data;
+        TIndex idx = 0;
+        for (auto d : data) {
+          base_params[ idx ].duration = fn(udc[d], idx);
+          assert(base_params[idx].duration > 0.f);
+          ++idx;
+        }
+        return *this;
+      }
+
+      // This can't be configured per element
+      CTransition& ease(ease::TEaseFn new_ease_fn) {
+        ease_fn = new_ease_fn;
+        return *this;
+      }
+
+      // 
+      template< typename TFn >
+      const CTransition& set(uint32_t prop_id, TFn prop_value_provider) const {
+        // Get the type of the value returned by the provided function
+        typedef typename decltype(prop_value_provider(data[0], 0)) TPropType;
+
+        auto& tweens_container = selection.dv->getTweenstProps< TPropType >();
+
+        // Reserve N new tweens
+        TIndex i0 = tweens_container.size();
+        TIndex i1 = i0 + selection.size();
+        tweens_container.resize( i1 );
+
+        auto* tc = &tweens_container[i0];
+
+        // Init all tweens in bulk
+        TIndex idx = 0;
+        for (auto d : data) {
+          tc->user_data_idx = d;
+          tc->prop_id = prop_id;
+          tc->start_delay = base_params[idx].delay;
+          tc->duration = base_params[idx].duration;
+          tc->ease_fn = ease_fn;
+          tc->value_t0 = 0;
+          tc->value_t1 = prop_value_provider(d, idx);
+          ++tc;
+          ++idx;
+        }
+
+        return *this;
+      }
+
+    };
+
+    CTransition transition() const {
+      return CTransition(this);
+    }
+
   };
 
+  // -----------------------------------------------------------------------------
   // https://medium.com/@mbostock/what-makes-software-good-943557f8a488#.dgmv8u19d
   CSelection& data( TUserDataContainer& new_data ) {
 
@@ -215,7 +399,9 @@ public:
   CSelection& enter() { return s_enter; }
   CSelection& updated() { return s_updated; }
 
-  CDataVisualizer() {
+  CDataVisualizer() 
+  : current_time( 0.f )
+  {
     s_updated.dv = this;
     s_enter.dv = this;
     s_exit.dv = this;
@@ -231,6 +417,13 @@ public:
     return true;
   }
 
+  void update(float dt) {
+    if (updateTweens<float>(dt))
+      current_time += dt;
+    else
+      current_time = 0.f;
+  }
+
 private:
 
   CSelection                s_updated;
@@ -241,9 +434,12 @@ private:
   TUserDataContainer        all_user_data;
   TVisualDataContainer      all_visual_data;
 
+  float                     current_time;
+
   friend class CSelection;
 
 };
+
 
 // -----------------------------------------------------------
 // -----------------------------------------------------------
@@ -252,9 +448,13 @@ private:
 struct TVisual {
   int x0;
   int y0;
+  float k;
   TVisual() : x0(100), y0(0) {}
   void destroy() {
     x0 = y0 = -1;
+  }
+  void set(uint32_t prop_id, float t) {
+
   }
 };
 
@@ -336,6 +536,8 @@ int main()
     else
       dumpAll("After pushing lluc and removing pau", d);
   }
+
+  d.update(0.f);
 
   return 0;
 }
