@@ -46,6 +46,7 @@ class CDataVisualizer {
   struct TTweenValue {
     TIndex          user_data_idx;      // index in TUserDataContainer & TVisualDataContainer
     uint32_t        prop_id;            // color, pos, direction, ... the id of the attribute
+    bool            remove_on_end;      // Remove item when tween finishes?
     float           start_delay;        // When must start
     float           duration;           // How long will be
     ease::TEaseFn   ease_fn;            // Type of blending
@@ -79,6 +80,7 @@ class CDataVisualizer {
     return all_visual_data[user_data_idx].get(prop_id);
   }
 
+  // -------------------------------------------------------
   template< typename TPropType >
   bool updateTweens(float dt) {
     int nactives = 0;
@@ -94,7 +96,13 @@ class CDataVisualizer {
         unit_time = 1.f;
         // disable this
         tw.start_delay = -1.f;
+        
         // notify end of the transition
+        if (tw.remove_on_end) {
+          // Should we at least render one time with the full blend?
+          all_visual_data[tw.user_data_idx].destroy();
+          continue;
+        }
       }
 
       auto new_value = tw.value_t0 * (1.f - unit_time) + tw.value_t1 * (unit_time);
@@ -231,6 +239,8 @@ public:
       const CSelection& selection;
       float             default_delay = 0.f;
       float             default_duration = 0.25f;
+      bool              default_remove_on_end = false;
+      TIndex            first_tween_idx = invalid_idx;
       ease::TEaseFn ease_fn = ease::cubic;
 
       friend class CSelection;
@@ -244,10 +254,8 @@ public:
 
       void alloc() {
         base_params.resize(selection.size());
-        for (auto& e : base_params) {
-          e.delay = default_delay;
-          e.duration = default_duration;
-        }
+        duration(default_duration);
+        delay(default_delay);
       }
 
       CTransition(const CSelection& new_selection) : selection( new_selection ) {
@@ -255,7 +263,8 @@ public:
       }
 
     public:
-      
+
+      // -----------------------------------------------------------
       // Save delay for each element in the selection
       template< typename TFn >
       CTransition& delay(TFn fn) {
@@ -268,6 +277,18 @@ public:
         return *this;
       }
 
+      // Cte delay for each element in the selection
+      CTransition& delay(float new_constant_delay ) {
+        auto first = base_params.begin()
+        ,    last = base_params.end();
+        while (first != last) {
+          first->delay = new_constant_delay;
+          ++first;
+        }
+        return *this;
+      }
+
+      // -----------------------------------------------------------
       // Save duration for each element in the selection
       template< typename TFn >
       CTransition& duration(TFn fn) {
@@ -281,26 +302,53 @@ public:
         return *this;
       }
 
+      // Cte duration for each element in the selection
+      CTransition& duration(float new_constant_duration) {
+        auto first = base_params.begin()
+          , last = base_params.end();
+        while (first != last) {
+          first->duration = new_constant_duration;
+          ++first;
+        }
+        return *this;
+      }
+
+      // -----------------------------------------------------------
       // This can't be configured per element
       CTransition& ease(ease::TEaseFn new_ease_fn) {
         ease_fn = new_ease_fn;
         return *this;
       }
 
-      // 
+      // -----------------------------------------------------------
+      CTransition& remove() {
+        default_remove_on_end = true;
+
+        //// update the already registered tweens
+        //if (first_tween_idx != invalid_idx) {
+        //  auto& tweens_container = selection.dv->getTweens< TPropType >();
+        //  auto* tc = &tweens_container[first_tween_idx];
+        //  for (TIndex n = selection.size(); n--; ++tc ) 
+        //    tc->remove_on_end = true;
+        //}
+
+        return *this;
+      }
+
+      // -----------------------------------------------------------
       template< typename TFn >
-      const CTransition& set(uint32_t prop_id, TFn prop_value_provider) const {
+      CTransition& set(uint32_t prop_id, TFn prop_value_provider) {
         // Get the type of the value returned by the provided function
         typedef typename decltype(prop_value_provider(data[0], 0)) TPropType;
 
         auto& tweens_container = selection.dv->getTweens< TPropType >();
 
         // Reserve N new tweens
-        TIndex i0 = (TIndex)tweens_container.size();
-        TIndex i1 = i0 + selection.size();
+        first_tween_idx = (TIndex)tweens_container.size();
+        TIndex i1 = first_tween_idx + selection.size();
         tweens_container.resize( i1 );
 
-        auto* tc = &tweens_container[i0];
+        auto tc = tweens_container.begin() + first_tween_idx;
 
         // Init all tweens in bulk
         TIndex idx = 0;
@@ -312,6 +360,7 @@ public:
           tc->ease_fn = ease_fn;
           tc->value_t0 = selection.dv->getPropValue<TPropType>(d, prop_id);
           tc->value_t1 = prop_value_provider(d, idx);
+          tc->remove_on_end = default_remove_on_end;
           ++tc;
           ++idx;
         }
@@ -402,11 +451,12 @@ public:
   }
 
   void update(float dt) {
-    if (updateTweens<float>(dt))
-      current_time += dt;
-    else
+    current_time += dt;
+    if (!updateTweens<float>(dt))
       current_time = 0.f;
   }
+
+  float currentTime() const { return current_time; }
 
 private:
 
@@ -433,8 +483,9 @@ struct TVisual {
   int x0;
   int y0;
   float k;
-  TVisual() : x0(100), y0(0) {}
+  TVisual() : x0(100), y0(0), k( -1.f) {}
   void destroy() {
+    printf("  Destroying visual %dx%d %f\n", x0, y0, k);
     x0 = y0 = -1;
   }
   void set(uint32_t prop_id, float new_k) {
@@ -457,7 +508,7 @@ struct TUserData {
 };
 
 void dump(const TUserData& s, const TVisual& v) {
-  printf("  dump   : %-16s %dx%d\n", s.name, v.x0, v.y0);
+  printf("  dump   : %-16s %dx%d %1.3f\n", s.name, v.x0, v.y0, v.k);
 };
 
 template< class CVisualizer >
@@ -465,13 +516,13 @@ void dumpAll(const char* title, CVisualizer& d) {
   assert(d.isValid());
   printf("%s\n", title);
   d.enter().each([](auto s, auto v) {
-    printf("  enter  : %-16s %dx%d\n", s.name, v.x0, v.y0);
+    printf("  enter  : %-16s %dx%d %1.3f\n", s.name, v.x0, v.y0, v.k);
   });
   d.updated().each([](auto s, auto v) {
-    printf("  updated: %-16s %dx%d\n", s.name, v.x0, v.y0);
+    printf("  updated: %-16s %dx%d %1.3f\n", s.name, v.x0, v.y0, v.k);
   });
   d.exit().each([](auto s, auto v) {
-    printf("  exit   : %-16s %dx%d\n", s.name, v.x0, v.y0);
+    printf("  exit   : %-16s %dx%d %1.3f\n", s.name, v.x0, v.y0, v.k);
   });
 }
 
@@ -500,7 +551,12 @@ int main()
 
     auto it = d.data(names);
 
-    d.exit().remove();
+    d.exit()
+      .transition()
+      .duration(0.5f)
+      .remove()
+      .set(0, [](auto d, auto idx) { return 0.f; })
+      ;
 
     //d.enter().filter([](auto d, auto idx) { return (idx & 1) == 0; }).each(dump);
     d.enter().append([](auto d, auto idx) {
@@ -510,8 +566,11 @@ int main()
       return v;
     }).set(0, [](auto d, auto idx) { return idx * 10.f; })
       .transition()
-      .delay([](auto d, auto idx) { return 0.5f; })
-      .set(0, [](auto d, auto idx) { return idx * 20.f; });
+      .duration(0.5f)
+      .ease(ease::linear)
+    //.delay(0.5f)
+      //.set(0, [](auto d, auto idx) { return idx * 20.f; })
+      ;
 
     auto all = d.enter().merge(d.updated());
     all.sort().each(dump);
@@ -525,9 +584,15 @@ int main()
       dumpAll("After Initial binding", d);
     else
       dumpAll("After pushing lluc and removing pau", d);
+
+    for (int i = 0; i < 6; ++i) {
+      d.update(0.1f);
+      printf("%d After updating 0.1f -> %f\n", i, d.currentTime());
+      dumpAll("", d);
+    }
+
   }
 
-  d.update(0.f);
 
   return 0;
 }
