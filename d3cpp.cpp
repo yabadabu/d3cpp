@@ -17,7 +17,11 @@ struct TVisual {
   void set(uint32_t prop_id, float new_k) {
     k = new_k;
   }
-  float get(uint32_t prop_id) {
+  template< typename TPropType >
+  TPropType get(uint32_t prop_id);
+
+  template<>
+  float get<float>(uint32_t prop_id) {
     return k;
   }
 };
@@ -33,7 +37,7 @@ struct TUserData {
   }
 };
 
-void dump(const TUserData& s, const TVisual& v) {
+void dump(const TUserData& s, int idx, const TVisual& v) {
   printf("  dump   : %-16s %dx%d %1.3f\n", s.name, v.x0, v.y0, v.k);
 };
 
@@ -41,19 +45,66 @@ template< class CVisualizer >
 void dumpAll(const char* title, CVisualizer& d) {
   assert(d.isValid());
   printf("%s\n", title);
-  d.enter().each([](auto s, auto v) {
+  d.enter().each([](auto s, auto idx, auto v) {
     printf("  enter  : %-16s %dx%d %1.3f\n", s.name, v.x0, v.y0, v.k);
   });
-  d.updated().each([](auto s, auto v) {
+  d.updated().each([](auto s, auto idx, auto v) {
     printf("  updated: %-16s %dx%d %1.3f\n", s.name, v.x0, v.y0, v.k);
   });
-  d.exit().each([](auto s, auto v) {
+  d.exit().each([](auto s, auto idx, auto v) {
     printf("  exit   : %-16s %dx%d %1.3f\n", s.name, v.x0, v.y0, v.k);
   });
 }
 
+#include <type_traits>
+
+template < typename PotentiallyCallable, typename... Args>
+struct is_callable
+{
+  typedef char(&no)[1];
+  typedef char(&yes)[2];
+
+  template < typename T > struct dummy;
+
+  template < typename CheckType>
+  static yes check(dummy<decltype(std::declval<CheckType>()(std::declval<Args>()...))> *);
+  template < typename CheckType>
+  static no check(...);
+
+  enum { value = sizeof(check<PotentiallyCallable>(0)) == sizeof(yes) };
+};
+
+// This seems to work fine!!
+class TClass {
+public:
+
+  template <typename Type, typename std::enable_if< is_callable<Type>::value, int>::type = 0>
+  TClass& set(uint32_t prop_id, Type t) {
+    printf("set<is_callable> %d\n", prop_id);
+    decltype(t()) v = t();
+    std::cout << v << std::endl;
+    return *this;
+  }
+  template <typename Type, typename std::enable_if< !is_callable<Type>::value, int>::type = 0>
+  TClass& set(uint32_t prop_id, Type t) {
+    printf("set<is_NOT_callable> %d\n", prop_id);
+    std::cout << t << std::endl;
+    return *this;
+  }
+};
+
+#include <iostream>
+float getFloat() {
+  return 11.f;
+}
+
 int main()
 {
+  TClass c;
+  c.set(2, 8);
+  c.set(3, 8.8f);
+  c.set(4, []() { return 1.; });
+  c.set(5,getFloat);
 
   std::vector< TUserData > names;
 
